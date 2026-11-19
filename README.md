@@ -1,1 +1,1 @@
-Github Repository for Group Syncrew's Final Project in both Data Structures and Algorithms and Programming 3
+Git Repository for Group Syncrew's Final Project in both Data Structures and Algorithms and Programming 3
