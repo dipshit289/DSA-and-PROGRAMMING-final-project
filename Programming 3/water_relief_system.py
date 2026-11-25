@@ -3,8 +3,9 @@ import os
 import getpass
 from datetime import datetime as dt
 
-records_file = "records.json"
-admin_file = "admin_info.json"
+script_directory = os.path.dirname(os.path.abspath(__file__))
+records_file = os.path.join(script_directory, "records.json")
+admin_file = os.path.join(script_directory, "admin_info.json")
 
 r_data = []
 
@@ -19,11 +20,27 @@ else:
             r_data = json.load(rf)
     # if file is damaged, back it up and start with an empty list
     except json.decoder.JSONDecodeError:
-        os.replace(records_file, "records_backup.json")
+        backup_file = os.path.join(script_directory, "records_backup.json")
+        os.replace(records_file, backup_file)
         print("[!] records.json was damaged/corrupted. Saved a copy as records_backup.json")
         r_data = []
         with open(records_file, "w") as rf:
             json.dump([], rf)
+
+
+# rename the old key and save once if any records were changed
+# basically this just changes the naming of household to lot number
+records_changed = False
+for record in r_data:
+    if "household_number" in record:
+        if "lot_number" not in record:
+            record["lot_number"] = record["household_number"]
+        del record["household_number"]
+        records_changed = True
+
+if records_changed:
+    with open(records_file, "w") as rf:
+        json.dump(r_data, rf, indent=2)
 
 
 # HELPER FUNCTIONS
@@ -45,7 +62,7 @@ def get_required_input(prompt):
         print("[!] This field cannot be blank. Please try again.")
 
 
-# admin login is required to access services 2-4
+# admin login is required to open the admin menu
 def check_admin_login():
     # returns true if password and username is correct, false if not
     if not os.path.exists(admin_file):
@@ -74,7 +91,7 @@ record_labels = {
     "ticket_id": "Ticket ID",
     "name": "Name",
     "block_number": "Block Number",
-    "household_number": "Household Number",
+    "lot_number": "Lot Number",
     "contact_number": "Contact Number",
     "request_type": "Request Type",
     "description": "Description",
@@ -103,17 +120,26 @@ def find_ticket(ticket_id):
             return record
     return None
 
-# checks if a household already has an unfinished request of the same type
-def find_active_request(block_number, household_number, request_type):
+
+# checks if a lot already has an unfinished request of the same type
+def find_active_request(block_number, lot_number, request_type):
     for record in r_data:
         if (record["block_number"] == block_number
-                and record["household_number"] == household_number
+                and record["lot_number"] == lot_number
                 and record["request_type"] == request_type
                 and record["status"] != "Completed"):
             return record
     return None
 
 
+# returns only the statuses that move the request forward
+def get_allowed_statuses(current_status):
+    if current_status == "Pending":
+        return ["Ongoing", "Completed"]
+    elif current_status == "Ongoing":
+        return ["Completed"]
+    else:
+        return []
 
 
 # 1.CREATE REQUEST
@@ -161,20 +187,18 @@ def create_request():
         else:
             print("Invalid Block Number. Please try again")
 
-    # for household number, digits only (1-36) are accepted
+    # for lot number, digits only (1-36) are accepted
     while True:
-        household_number = input("Enter your household number: ").strip()
-        if household_number == "":
+        lot_number = input("Enter your lot number: ").strip()
+        if lot_number == "":
             print("This field cannot be blank. Please try again.")
-        elif not household_number.isdigit():
-            print("Invalid Household Number. Use Numbers only.")
-        elif not 1 <= int(household_number) <= 36:
-            print("Invalid Household Number. Enter number 1-36")
+        elif not lot_number.isdigit():
+            print("Invalid Lot Number. Use Numbers only.")
+        elif not 1 <= int(lot_number) <= 36:
+            print("Invalid Lot Number. Enter number 1-36")
         else:
-            household_number = str(int(household_number))  # removes leading zeros: "007" -> "7"
+            lot_number = str(int(lot_number))  # removes leading zeros: "007" -> "7"
             break
-
-
 
     # contact number must be 11 digits and start with 09
     while True:
@@ -209,9 +233,9 @@ def create_request():
             print("Invalid Choice. Please try again.")
 
     # checks for duplicate request
-    existing = find_active_request(block_number, household_number, request_type)
+    existing = find_active_request(block_number, lot_number, request_type)
     if existing is not None:
-        print("\n[!] This household already has an active request for this problem.")
+        print("\n[!] This lot already has an active request for this problem.")
         print("No new ticket was created. Existing Ticket:")
         display_record(existing)
         return
@@ -225,7 +249,7 @@ def create_request():
     new_record = {
         "ticket_id": ticket_id,
         "name": name,
-        "household_number": household_number,
+        "lot_number": lot_number,
         "block_number": block_number,
         "contact_number": contact_number,
         "request_type": request_type,
@@ -247,10 +271,6 @@ def view_records():
     print("=" * 40)
     print("VIEW RECORDS".center(40))
     print("=" * 40)
-
-    # Admin login
-    if not check_admin_login():
-        return
 
     # Check if there are records
     if len(r_data) == 0:
@@ -310,24 +330,101 @@ def view_records():
           "| Ongoing:", ongoing, "| Completed:", completed)
 
 
-# 3.SEARCH TICKET
+# 3.SEARCH / FILTER TICKETS
 
 def search_ticket():
     print("=" * 40)
-    print("SEARCH TICKET".center(40))
+    print("SEARCH / FILTER TICKETS".center(40))
     print("=" * 40)
 
-    # admin authentication
-    if not check_admin_login():
-        return
+    # choose which record data to filter
+    while True:
+        print("[1] Ticket ID", "\n[2] Name", "\n[3] Block Number",
+              "\n[4] Lot Number", "\n[5] Request Type", "\n[6] Status")
+        choice = input("Choose a filter: ").strip()
 
-    ticket_id = input("Enter ticket ID: ").strip().upper()
-    record = find_ticket(ticket_id)
+        if choice == "1":
+            filter_key = "ticket_id"
+            break
+        elif choice == "2":
+            filter_key = "name"
+            break
+        elif choice == "3":
+            filter_key = "block_number"
+            break
+        elif choice == "4":
+            filter_key = "lot_number"
+            break
+        elif choice == "5":
+            filter_key = "request_type"
+            break
+        elif choice == "6":
+            filter_key = "status"
+            break
+        else:
+            print("Invalid Choice. Please try again.")
 
-    if record is None:
-        print("Ticket Not Found")
+    # get the value for the selected filter
+    if filter_key == "ticket_id":
+        filter_value = get_required_input("Enter ticket ID: ").upper()
+    elif filter_key == "name":
+        filter_value = get_required_input("Enter name or part of name: ").lower()
+    elif filter_key == "lot_number":
+        while True:
+            filter_value = input("Enter lot number: ").strip()
+            if filter_value == "":
+                print("This field cannot be blank. Please try again.")
+            elif not filter_value.isdecimal():
+                print("Invalid Lot Number. Use Numbers only.")
+            elif not 1 <= int(filter_value) <= 36:
+                print("Invalid Lot Number. Enter number 1-36")
+            else:
+                filter_value = str(int(filter_value))
+                break
     else:
-        display_record(record)
+        # use the same block, request type, and status choices
+        if filter_key == "block_number":
+            options = ["10", "19", "35", "39A", "39B"]
+        elif filter_key == "request_type":
+            options = ["No water supply", "Contaminated / Discolored Water",
+                       "Leak or burst pipe", "Others"]
+        else:
+            options = ["Pending", "Ongoing", "Completed"]
+
+        while True:
+            print("Choose " + record_labels[filter_key] + ":")
+            option_number = 1
+            filter_options = {}
+            for option in options:
+                filter_options[str(option_number)] = option
+                if filter_key == "block_number":
+                    print(f"[{option_number}] Block {option}")
+                else:
+                    print(f"[{option_number}] {option}")
+                option_number += 1
+
+            choice = input("Enter your choice: ").strip()
+            if choice in filter_options:
+                filter_value = filter_options[choice]
+                break
+            else:
+                print("Invalid Choice. Please try again.")
+
+    # display every match in the saved record order
+    found_count = 0
+    for record in r_data:
+        if filter_key == "name":
+            matches = filter_value in record["name"].lower()
+        else:
+            matches = record[filter_key] == filter_value
+
+        if matches:
+            display_record(record)
+            found_count += 1
+
+    if found_count == 0:
+        print("No matching records found.")
+    print("Number of matches:", found_count)
 
 
 # 4.UPDATE REQUEST
@@ -337,11 +434,7 @@ def update_request():
     print("UPDATE REQUEST".center(40))
     print("=" * 40)
 
-    # admin authentication
-    if not check_admin_login():
-        return
-
-    # find the ticket id (same steps as search_ticket)
+    # find the ticket id
     ticket_id = input("Enter ticket ID: ").strip().upper()
     record = find_ticket(ticket_id)
 
@@ -351,25 +444,30 @@ def update_request():
 
     display_record(record)
 
-    # show the update options
-    print("Update Status:")
-    print("[1] Pending", "\n[2] Ongoing", "\n[3] Completed")
-    choice = input("Choose new Status: ").strip()
+    # completed requests have no further status action
+    if record["status"] == "Completed":
+        print("This request is already Completed. No further status action is available.")
+        return
 
-    if choice == "1":
-        new_status = "Pending"
-    elif choice == "2":
-        new_status = "Ongoing"
-    elif choice == "3":
-        new_status = "Completed"
-    else:
+    # number only the allowed next statuses
+    allowed_statuses = get_allowed_statuses(record["status"])
+    if len(allowed_statuses) == 0:
+        print("Invalid current status. No changes were made.")
+        return
+
+    print("Update Status:")
+    status_options = {}
+    option_number = 1
+    for status in allowed_statuses:
+        print(f"[{option_number}] {status}")
+        status_options[str(option_number)] = status
+        option_number += 1
+
+    choice = input("Choose new Status: ").strip()
+    if choice not in status_options:
         print("Invalid Choice. No changes were made.")
         return
-
-    # same as current status, no changes
-    if new_status == record["status"]:
-        print("Ticket is already", new_status + ". No changes were made.")
-        return
+    new_status = status_options[choice]
 
     # update records
     record["status"] = new_status
@@ -383,6 +481,32 @@ def update_request():
     display_record(record)
 
 
+# ADMIN MENU
+
+# stays open until the administrator chooses logout
+def admin_menu():
+    print("=" * 40)
+    print("ADMIN MENU".center(40))
+    print("=" * 40)
+
+    while True:
+        print("\n[1] View Records", "\n[2] Search / Filter Tickets",
+              "\n[3] Update Request", "\n[4] Logout")
+        service = input("Please Choose a Service: ").strip()
+
+        if service == "1":
+            view_records()
+        elif service == "2":
+            search_ticket()
+        elif service == "3":
+            update_request()
+        elif service == "4":
+            print("Logged out successfully.")
+            return
+        else:
+            print("Invalid Input. Please try again")
+
+
 # MAIN PROGRAM
 
 print("=" * 40)
@@ -391,20 +515,16 @@ print("=" * 40)
 
 # Menu loop, repeats until user chooses exit
 while True:
-    print("\n[1] Create Request", "\n[2] View Records (Admin)", "\n[3] Search Ticket (Admin)",
-          "\n[4] Update Request (Admin)", "\n[5] Exit")
-    print("[!] Note: Options 2-4 Require Administrative Access")
+    print("\n[1] Guest Access (Create Request)", "\n[2] Admin Access", "\n[3] Exit")
+    print("[!] Note: Option 2 Requires Administrative Access")
     service = input("Please Choose a Service: ").strip()
 
     if service == "1":
         create_request()
     elif service == "2":
-        view_records()
+        if check_admin_login():
+            admin_menu()
     elif service == "3":
-        search_ticket()
-    elif service == "4":
-        update_request()
-    elif service == "5":
         save_records()
         print("Thank you for using Water Relief Ticketing System")
         print("Program Terminated")
